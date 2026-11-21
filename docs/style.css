@@ -81,3 +81,5 @@ button.big { width: 100%; padding: 15px; font-size: 1.05rem; }
 .confetti { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 5; }
 .confetti i { position: absolute; top: -10px; width: 8px; height: 14px; animation: fall 2.6s linear forwards; }
 @keyframes fall { to { transform: translateY(110vh) rotate(720deg); } }
+.share { display: flex; flex-direction: column; gap: 8px; align-items: stretch; margin-top: 12px; text-align: center; }
+.share b { color: var(--gold); letter-spacing: 0.12em; }

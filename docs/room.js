@@ -62,16 +62,16 @@
       const done = (extra) => { this.changed(); return { ok: true, ...extra }; };
       const isHost = token === this.hostToken;
       const p = this.players.get(token);
-      if (ev.startsWith("host:") && !isHost) return fail("Only the person who started the table can do that.");
-      if (ev !== "join" && !p) return fail("Join the table first.");
+      if (ev.startsWith("host:") && !isHost) return fail("Das kann nur, wer den Tisch gestartet hat.");
+      if (ev !== "join" && !p) return fail("Bitte zuerst dem Tisch beitreten.");
 
       switch (ev) {
         case "join": {
           if (p) { p.connected = true; if (d.name) p.name = clean(d.name, 20) || p.name; return done(); }
           const name = clean(d.name, 20);
-          if (!name) return fail("Enter your name first.");
-          if (this.players.size >= 30) return fail("This table is full.");
-          if ([...this.players.values()].some((x) => x.name.toLowerCase() === name.toLowerCase())) return fail("That name is already at this table.");
+          if (!name) return fail("Bitte zuerst deinen Namen eingeben.");
+          if (this.players.size >= 30) return fail("Dieser Tisch ist voll.");
+          if ([...this.players.values()].some((x) => x.name.toLowerCase() === name.toLowerCase())) return fail("Dieser Name ist an diesem Tisch schon vergeben.");
           this.players.set(token, {
             id: Math.random().toString(36).slice(2, 10), token, name,
             answer: "", locked: false, crossed: 0, bingo: false, connected: true,
@@ -79,16 +79,16 @@
           return done();
         }
         case "lock": {
-          if (this.revealed) return fail("Guesses are already revealed. Wait for the next round.");
+          if (this.revealed) return fail("Die Tipps sind schon aufgedeckt. Warte auf die nächste Runde.");
           const answer = clean(d.answer, 120);
-          if (!answer) return fail("Write a guess first.");
+          if (!answer) return fail("Schreib zuerst deinen Tipp.");
           p.answer = answer;
           p.locked = true;
           this.checkAllLocked();
           return done();
         }
         case "unlock": {
-          if (this.revealed) return fail("Too late, guesses are revealed.");
+          if (this.revealed) return fail("Zu spät, die Tipps sind schon aufgedeckt.");
           p.locked = false;
           return done();
         }
@@ -109,10 +109,10 @@
         }
         case "host:kick": {
           for (const [t, x] of this.players) if (x.id === d.playerId && t !== this.hostToken) { this.players.delete(t); this.checkAllLocked(); return done(); }
-          return fail("No such player.");
+          return fail("Diesen Spieler gibt es nicht.");
         }
         default:
-          return fail("Unknown action.");
+          return fail("Unbekannte Aktion.");
       }
     }
   }

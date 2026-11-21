@@ -11,8 +11,18 @@
   function peerOptions() {
     const q = new URLSearchParams(location.search);
     const host = q.get("peerhost");
-    if (!host) return { debug: 0 };
-    return { host, port: Number(q.get("peerport") || 9000), path: q.get("peerpath") || "/", secure: q.get("peersecure") === "1", debug: 0 };
+    // STUN finds a direct route between phones on different networks; TURN relays
+    // the (tiny) game messages when a direct route is blocked, e.g. on mobile data.
+    const config = {
+      iceServers: [
+        { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+        { urls: "stun:stun.cloudflare.com:3478" },
+        { urls: ["turn:eu-0.turn.peerjs.com:3478", "turn:us-0.turn.peerjs.com:3478"], username: "peerjs", credential: "peerjsp" },
+      ],
+      sdpSemantics: "unified-plan",
+    };
+    if (!host) return { debug: 0, config };
+    return { host, port: Number(q.get("peerport") || 9000), path: q.get("peerpath") || "/", secure: q.get("peersecure") === "1", debug: 0, config };
   }
   const randomCode = () => Array.from({ length: 4 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join("");
 
@@ -47,7 +57,7 @@
         p.on("error", (err) => {
           if (err.type === "unavailable-id" && !peer) {
             p.destroy();
-            if (code) return reject(new Error("This game is already open in another tab or device."));
+            if (code) return reject(new Error("Dieser Tisch ist schon in einem anderen Tab oder auf einem anderen Gerät geöffnet."));
             if (attempts < 5) return tryCode(randomCode(), attempts + 1);
           }
           if (!peer) reject(new Error(friendly(err)));
@@ -64,8 +74,8 @@
       if (!msg || msg.t !== "req" || !room) return;
       let token = c.token;
       if (msg.ev === "join" && msg.data && msg.data.token) token = String(msg.data.token).slice(0, 64);
-      if (!token) return c.send({ t: "res", id: msg.id, res: { ok: false, error: "Join first." } });
-      if (token === hostToken) return c.send({ t: "res", id: msg.id, res: { ok: false, error: "Not allowed." } });
+      if (!token) return c.send({ t: "res", id: msg.id, res: { ok: false, error: "Bitte zuerst beitreten." } });
+      if (token === hostToken) return c.send({ t: "res", id: msg.id, res: { ok: false, error: "Nicht erlaubt." } });
       const res = room.handle(token, msg.ev, msg.data);
       if (res.ok && msg.ev === "join") c.token = token;
       c.send({ t: "res", id: msg.id, res });
@@ -96,7 +106,7 @@
       const start = () => {
         const c = peer.connect(PREFIX + code, { reliable: true });
         let opened = false;
-        const timer = setTimeout(() => { if (!opened) { c.close(); reject(new Error("Couldn't reach the host. Check the code, and that the host's page is open.")); } }, 12000);
+        const timer = setTimeout(() => { if (!opened) { c.close(); reject(new Error("Tisch nicht erreichbar. Stimmt der Code, und ist die Seite beim Gastgeber noch offen?")); } }, 12000);
         c.on("open", () => { opened = true; clearTimeout(timer); conn = c; resolve(); });
         c.on("data", onHostData);
         c.on("close", () => { if (conn === c) { conn = null; scheduleReconnect(); } });
@@ -108,7 +118,7 @@
       peer.on("disconnected", () => { if (!peer.destroyed) setTimeout(() => peer.reconnect(), 1500); });
       peer.on("error", (err) => {
         if (err.type === "peer-unavailable") {
-          if (!conn) reject(new Error("No game with that code. Is the host's page still open?"));
+          if (!conn) reject(new Error("Kein Tisch mit diesem Code. Ist die Seite beim Gastgeber noch offen?"));
           return;
         }
         if (!conn) reject(new Error(friendly(err)));
@@ -118,7 +128,7 @@
 
   function scheduleReconnect() {
     if (mode !== "player" || retryTimer) return;
-    emitLocal("status", "Connection to the host lost. Reconnecting…");
+    emitLocal("status", "Verbindung zum Tisch verloren. Verbinde neu …");
     retryTimer = setTimeout(async () => {
       retryTimer = null;
       try {
@@ -139,10 +149,10 @@
   // ---------------- shared ----------------
   function request(ev, data) {
     if (mode === "host" && room) return Promise.resolve(room.handle(hostToken, ev, data));
-    if (!conn || !conn.open) return Promise.resolve({ ok: false, error: "Not connected to the host right now." });
+    if (!conn || !conn.open) return Promise.resolve({ ok: false, error: "Gerade nicht mit dem Tisch verbunden." });
     const id = ++reqId;
     return new Promise((resolve) => {
-      const timer = setTimeout(() => { pending.delete(id); resolve({ ok: false, error: "The host didn't answer. Try again." }); }, 8000);
+      const timer = setTimeout(() => { pending.delete(id); resolve({ ok: false, error: "Der Tisch antwortet nicht. Bitte nochmal versuchen." }); }, 8000);
       pending.set(id, { resolve, timer });
       conn.send({ t: "req", id, ev, data });
     });
@@ -158,9 +168,9 @@
 
   function friendly(err) {
     const t = err && err.type;
-    if (t === "browser-incompatible") return "This browser doesn't support peer-to-peer connections.";
-    if (t === "network" || t === "server-error" || t === "socket-error") return "Can't reach the matchmaking server. Check your internet connection.";
-    return (err && err.message) || "Connection problem.";
+    if (t === "browser-incompatible") return "Dieser Browser unterstützt keine direkten Verbindungen (WebRTC).";
+    if (t === "network" || t === "server-error" || t === "socket-error") return "Verbindungsserver nicht erreichbar. Bitte Internetverbindung prüfen.";
+    return (err && err.message) || "Verbindungsproblem.";
   }
 
   root.BBNet = { host, join, request, leave, on: (ev, fn) => (listeners[ev] = listeners[ev] || []).push(fn) };

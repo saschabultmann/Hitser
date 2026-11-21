@@ -1,5 +1,5 @@
-/* Beatboard: a phone bingo card for music-guessing games played at the table.
-   Solo: just the card. Table: join by code, lock in guesses, reveal together. */
+/* Beatboard: Bingokarte fürs Handy für Musik-Ratespiele am Tisch.
+   Solo: nur die Karte. Tisch: per Code oder Link beitreten, Tipps einloggen, gemeinsam aufdecken. */
 (() => {
   const Net = window.BBNet;
   const N = 5;
@@ -15,7 +15,7 @@
   let token = store.get("bb_token");
   if (!token) { token = Math.random().toString(36).slice(2) + Date.now().toString(36); store.set("bb_token", token); }
 
-  // ---------- the card (always local to this phone) ----------
+  // ---------- die Karte (bleibt auf diesem Handy) ----------
   function freshCard() {
     const colors = [];
     for (let c = 1; c <= N; c++) for (let i = 0; i < N; i++) colors.push(c);
@@ -38,19 +38,22 @@
     return lines.filter((l) => l.every((i) => card.crossed[i]));
   }
 
-  // ---------- app state ----------
+  // ---------- Zustand ----------
+  // Einladungslink: ?tisch=CODE (alte Links mit ?code=CODE gehen auch)
+  const inviteCode = (params.get("tisch") || params.get("code") || "").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
   let mode = store.get("bb_mode") || "home"; // home | solo | table
-  let table = null; // state from the table host
+  let table = null;
   let lastRound = null;
   let busy = false;
   let status = null;
   let confirmNew = 0;
+  let invite = inviteCode.length === 4 ? inviteCode : null; // Einladung, die noch nicht angenommen ist
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   function toast(msg) {
     const t = document.getElementById("toast");
     t.textContent = msg; t.hidden = false;
-    clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2600);
+    clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2800);
   }
   function confetti() {
     const c = document.createElement("div"); c.className = "confetti";
@@ -68,14 +71,34 @@
     return res;
   }
   function setMode(m) { mode = m; store.set("bb_mode", m); }
+  const shareUrl = (code) => `${location.origin}${location.pathname}?tisch=${code}`;
 
-  // ---------- rendering ----------
+  async function share(code) {
+    const url = shareUrl(code);
+    const text = `Komm an meinen Bingo-Tisch! Code: ${code}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: "Beatboard", text, url }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+    }
+    try { await navigator.clipboard.writeText(url); toast("Link kopiert. Schick ihn deinen Freunden!"); }
+    catch { window.prompt("Diesen Link teilen:", url); }
+  }
+
+  // Bildschirm anlassen, solange man am Tisch sitzt (beim Gastgeber läuft dort der Tisch).
+  let wakeLock = null;
+  async function keepAwake() {
+    if (mode !== "table" || !("wakeLock" in navigator) || wakeLock) return;
+    try { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => (wakeLock = null)); } catch {}
+  }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
+
+  // ---------- Anzeige ----------
   function render() {
     const a = document.activeElement;
     const focusId = a && a.id;
     const sel = a && a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null;
     if (mode === "solo") renderCard(false);
     else if (mode === "table" && table && table.me) renderCard(true);
+    else if (invite) renderInvite();
     else renderHome();
     if (focusId) {
       const el = document.getElementById(focusId);
@@ -84,29 +107,52 @@
     showStatus();
   }
 
+  function renderInvite() {
+    $top.textContent = "";
+    $app.innerHTML = `
+      <div class="panel">
+        <h2>Du bist an Tisch <span style="color:var(--gold);letter-spacing:.12em">${esc(invite)}</span> eingeladen</h2>
+        <p class="muted" style="margin-top:0">Gib deinen Namen ein und setz dich dazu.</p>
+        <label for="name">Dein Name</label>
+        <input id="name" maxlength="20" autocomplete="nickname" value="${esc(store.get("bb_name") || "")}" />
+        <p></p>
+        <button id="joinBtn" class="primary big" ${busy ? "disabled" : ""}>Beitreten</button>
+      </div>
+      <p class="center"><button id="otherBtn" class="ghost small">Lieber einen eigenen Tisch</button></p>`;
+    const go = () => {
+      const n = document.getElementById("name").value.trim();
+      if (!n) return toast("Bitte gib deinen Namen ein.");
+      store.set("bb_name", n);
+      joinTable(invite, n);
+    };
+    document.getElementById("joinBtn").onclick = go;
+    document.getElementById("name").onkeydown = (e) => { if (e.key === "Enter") go(); };
+    document.getElementById("otherBtn").onclick = () => { invite = null; clearInviteFromUrl(); render(); };
+  }
+
   function renderHome() {
     $top.textContent = "";
     $app.innerHTML = `
       <div class="panel">
-        <h2>Your bingo card, on your phone</h2>
-        <p class="muted" style="margin-top:0">Write your guess, lock it in, and cross off squares. Everyone at the table opens this page on their own phone.</p>
-        <label for="name">Your name</label>
+        <h2>Deine Bingokarte aufs Handy</h2>
+        <p class="muted" style="margin-top:0">Tipp aufschreiben, einloggen, Felder ankreuzen. Jeder am Tisch öffnet diese Seite auf seinem eigenen Handy, egal wo er ist.</p>
+        <label for="name">Dein Name</label>
         <input id="name" maxlength="20" autocomplete="nickname" value="${esc(store.get("bb_name") || "")}" />
         <p></p>
-        <button id="hostBtn" class="primary big" ${busy ? "disabled" : ""}>Start a table</button>
-        <div class="or">or join one</div>
+        <button id="hostBtn" class="primary big" ${busy ? "disabled" : ""}>Tisch starten</button>
+        <div class="or">oder einem Tisch beitreten</div>
         <div class="row">
-          <input id="code" class="code-input" maxlength="4" autocomplete="off" placeholder="CODE" value="${esc(params.get("code") || "")}" />
-          <button id="joinBtn" class="alt" ${busy ? "disabled" : ""}>Join</button>
+          <input id="code" class="code-input" maxlength="4" autocomplete="off" placeholder="CODE" />
+          <button id="joinBtn" class="alt" ${busy ? "disabled" : ""}>Beitreten</button>
         </div>
       </div>
-      <p class="center"><button id="soloBtn" class="ghost">Just the card, no table</button></p>`;
+      <p class="center"><button id="soloBtn" class="ghost">Nur die Karte, ohne Tisch</button></p>`;
     const name = () => { const n = document.getElementById("name").value.trim(); if (n) store.set("bb_name", n); return n; };
-    document.getElementById("hostBtn").onclick = () => { const n = name(); if (!n) return toast("Enter your name first."); startTable(n); };
+    document.getElementById("hostBtn").onclick = () => { const n = name(); if (!n) return toast("Bitte gib zuerst deinen Namen ein."); startTable(n); };
     document.getElementById("joinBtn").onclick = () => {
       const n = name(); const code = document.getElementById("code").value.trim().toUpperCase();
-      if (!n) return toast("Enter your name first.");
-      if (code.length !== 4) return toast("Enter the 4-letter code.");
+      if (!n) return toast("Bitte gib zuerst deinen Namen ein.");
+      if (code.length !== 4) return toast("Bitte gib den 4-stelligen Code ein.");
       joinTable(code, n);
     };
     document.getElementById("code").onkeydown = (e) => { if (e.key === "Enter") document.getElementById("joinBtn").click(); };
@@ -119,20 +165,20 @@
     const text = inTable && locked ? me.answer : card.draft;
     let buttons = "", hint = "";
     if (!inTable) {
-      buttons = `<button id="lockBtn" class="${locked ? "ghost" : "primary"}">${locked ? "Unlock" : "Lock in"}</button><button id="wipeBtn" class="ghost">Wipe</button>`;
+      buttons = `<button id="lockBtn" class="${locked ? "ghost" : "primary"}">${locked ? "Entsperren" : "Einloggen"}</button><button id="wipeBtn" class="ghost">Wegwischen</button>`;
     } else if (!t.revealed) {
       const active = t.players.filter((p) => p.connected);
       const n = active.filter((p) => p.locked).length;
-      buttons = locked ? `<button id="unlockBtn" class="ghost">Unlock</button>` : `<button id="lockBtn" class="primary">Lock in</button>`;
-      if (t.isHost) buttons += `<button id="revealBtn" class="alt">Reveal now</button>`;
-      hint = `${n} of ${active.length} locked in. Guesses show when everyone has locked in.`;
+      buttons = locked ? `<button id="unlockBtn" class="ghost">Entsperren</button>` : `<button id="lockBtn" class="primary">Einloggen</button>`;
+      if (t.isHost) buttons += `<button id="revealBtn" class="alt">Jetzt aufdecken</button>`;
+      hint = `${n} von ${active.length} eingeloggt. Die Tipps werden gezeigt, sobald alle eingeloggt haben.`;
     } else {
-      buttons = t.isHost ? `<button id="nextBtn" class="primary">Next round</button>` : "";
-      hint = t.isHost ? "Check the answer, cross off your squares, then start the next round." : "Guesses revealed! Cross off your squares. The next round starts when the host taps Next round.";
+      buttons = t.isHost ? `<button id="nextBtn" class="primary">Nächste Runde</button>` : "";
+      hint = t.isHost ? "Lösung prüfen, Felder ankreuzen, dann die nächste Runde starten." : "Tipps aufgedeckt! Kreuz deine Felder an. Die nächste Runde startet der Gastgeber.";
     }
     return `<div class="panel" style="padding:12px">
       <div class="slate ${locked ? "locked" : ""}">
-        <textarea id="answer" maxlength="120" placeholder="Write your guess…" aria-label="Your guess" ${locked ? "readonly" : ""}>${esc(text)}</textarea>
+        <textarea id="answer" maxlength="120" placeholder="Schreib deinen Tipp …" aria-label="Dein Tipp" ${locked ? "readonly" : ""}>${esc(text)}</textarea>
         ${locked ? `<span class="badge">🔒</span>` : ""}
       </div>
       ${buttons ? `<div class="actions">${buttons}</div>` : ""}
@@ -146,33 +192,36 @@
     const n = card.crossed.filter(Boolean).length;
     return `
       ${lines.length ? `<div class="banner">🎉 Bingo!${lines.length > 1 ? ` ×${lines.length}` : ""}</div>` : ""}
-      <div class="meta"><span>${n} of ${N * N} crossed</span><span>Tap a square to cross it off</span></div>
-      <div id="grid" class="cgrid" aria-label="Bingo card">${card.colors.map((c, i) =>
-        `<div class="cell c${c} ${card.crossed[i] ? "x" : ""} ${win.has(i) ? "win" : ""}" data-i="${i}" role="button" aria-pressed="${card.crossed[i]}" aria-label="Square ${i + 1}"></div>`).join("")}</div>`;
+      <div class="meta"><span>${n} von ${N * N} angekreuzt</span><span>Feld antippen zum Ankreuzen</span></div>
+      <div id="grid" class="cgrid" aria-label="Bingokarte">${card.colors.map((c, i) =>
+        `<div class="cell c${c} ${card.crossed[i] ? "x" : ""} ${win.has(i) ? "win" : ""}" data-i="${i}" role="button" aria-pressed="${card.crossed[i]}" aria-label="Feld ${i + 1}"></div>`).join("")}</div>`;
   }
 
   function tableHtml() {
     const t = table;
     return `<div class="panel">
-      <h2>At the table</h2>
+      <h2>Am Tisch</h2>
       <ul class="people">${t.players.map((p) => {
         const ans = p.answer
           ? `<span class="ans ${t.revealed ? "shown" : ""}">${esc(p.answer)}</span>`
-          : `<span class="ans">${p.locked ? "🔒 locked in" : t.revealed ? "–" : "thinking…"}</span>`;
+          : `<span class="ans">${p.locked ? "🔒 eingeloggt" : t.revealed ? "–" : "überlegt …"}</span>`;
         return `<li class="${p.connected ? "" : "off"}">
-          <span class="who">${esc(p.name)}${p.id === t.me.id ? " (you)" : ""}</span>
+          <span class="who">${esc(p.name)}${p.id === t.me.id ? " (du)" : ""}</span>
           ${ans}
           <span class="score">${p.bingo ? `<span class="tag">BINGO</span>` : `${p.crossed}/25`}</span>
-          ${t.isHost && !p.host ? `<button class="kick" data-kick="${p.id}" title="Remove from table">✕</button>` : ""}
+          ${t.isHost && !p.host ? `<button class="kick" data-kick="${p.id}" title="Vom Tisch entfernen">✕</button>` : ""}
         </li>`;
       }).join("")}</ul>
-      <p class="hint">Others join with code <b>${esc(t.code)}</b> on this page.</p>
+      <div class="share">
+        <div class="muted">Freunde einladen: Code <b>${esc(t.code)}</b> oder Link</div>
+        <button id="shareBtn" class="alt">Einladungslink teilen</button>
+      </div>
     </div>`;
   }
 
   function renderCard(inTable) {
     if (inTable) {
-      $top.innerHTML = `Table <b>${esc(table.code)}</b> · Round ${table.round}`;
+      $top.innerHTML = `Tisch <b>${esc(table.code)}</b> · Runde ${table.round}`;
     } else {
       $top.textContent = "";
     }
@@ -181,24 +230,25 @@
       ${gridHtml()}
       ${inTable ? tableHtml() : ""}
       <p class="center" style="margin-top:20px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap">
-        <button id="newBtn" class="ghost small">New card</button>
-        <button id="leaveBtn" class="ghost small">${inTable ? "Leave table" : "Back"}</button>
+        <button id="newBtn" class="ghost small">Neue Karte</button>
+        <button id="leaveBtn" class="ghost small">${inTable ? "Tisch verlassen" : "Zurück"}</button>
       </p>
-      ${inTable && table.isHost ? `<p class="hint">Keep this page open: the table runs on your phone.</p>` : ""}`;
+      ${inTable && table.isHost ? `<p class="hint">Lass diese Seite offen: Der Tisch läuft auf deinem Handy.</p>` : ""}`;
 
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
     const answer = document.getElementById("answer");
     if (!answer.readOnly) answer.oninput = () => { card.draft = answer.value; saveCard(); };
     on("lockBtn", async () => {
-      if (!card.draft.trim()) return toast("Write a guess first.");
+      if (!card.draft.trim()) return toast("Schreib zuerst deinen Tipp.");
       if (!inTable) { card.locked = true; saveCard(); return render(); }
       await send("lock", { answer: card.draft });
     });
+    if (!inTable && card.locked) on("lockBtn", () => { card.locked = false; saveCard(); render(); });
     on("unlockBtn", () => send("unlock"));
     on("wipeBtn", () => { card.draft = ""; card.locked = false; saveCard(); render(); document.getElementById("answer").focus(); });
-    if (!inTable && card.locked) on("lockBtn", () => { card.locked = false; saveCard(); render(); });
     on("revealBtn", () => send("host:reveal"));
     on("nextBtn", () => send("host:next"));
+    on("shareBtn", () => share(table.code));
     $app.querySelectorAll("[data-kick]").forEach((b) => (b.onclick = () => send("host:kick", { playerId: b.dataset.kick })));
 
     document.getElementById("grid").onclick = (e) => {
@@ -210,11 +260,11 @@
     };
     on("newBtn", () => {
       const b = document.getElementById("newBtn");
-      if (Date.now() - confirmNew > 3000) { confirmNew = Date.now(); b.textContent = "Tap again for a new card"; return; }
+      if (Date.now() - confirmNew > 3000) { confirmNew = Date.now(); b.textContent = "Nochmal tippen für neue Karte"; return; }
       confirmNew = 0;
       const draft = card.draft, locked = card.locked;
       card = freshCard(); card.draft = draft; card.locked = locked;
-      afterCardChange(); toast("Fresh card!");
+      afterCardChange(); toast("Neue Karte!");
     });
     on("leaveBtn", () => {
       if (inTable) leaveTable(); else setMode("home");
@@ -231,7 +281,7 @@
     if (mode === "table" && table) Net.request("progress", { crossed: card.crossed.filter(Boolean).length, bingo: lines > 0 });
   }
 
-  // ---------- table networking ----------
+  // ---------- Verbindung zum Tisch ----------
   function setBusy(b, label) {
     busy = b;
     document.querySelectorAll("#joinBtn, #hostBtn").forEach((x) => (x.disabled = b));
@@ -239,9 +289,16 @@
     if (!b) { clearTimeout(toast.t); document.getElementById("toast").hidden = true; }
   }
   const progress = () => ({ crossed: card.crossed.filter(Boolean).length, bingo: winningLines().length > 0 });
+  function clearInviteFromUrl() {
+    const q = new URLSearchParams(location.search);
+    if (!q.has("tisch") && !q.has("code")) return;
+    q.delete("tisch"); q.delete("code");
+    const rest = q.toString();
+    if (history.replaceState) history.replaceState(null, "", location.pathname + (rest ? "?" + rest : ""));
+  }
 
   async function startTable(name, code) {
-    setBusy(true, code ? "Reopening your table…" : "Starting a table…");
+    setBusy(true, code ? "Dein Tisch wird wieder geöffnet …" : "Tisch wird gestartet …");
     let saved = null;
     if (code) { try { saved = JSON.parse(store.get("bb_room_" + code)); } catch {} }
     try {
@@ -249,23 +306,26 @@
       store.set("bb_code", res.code); store.set("bb_role", "host"); setMode("table");
       await Net.request("join", { name, token });
       await Net.request("progress", progress());
+      keepAwake();
     } catch (e) {
       if (code) forgetTable();
-      setBusy(false); toast(e.message); return;
+      setBusy(false); toast(e.message); render(); return;
     }
     setBusy(false);
   }
 
   async function joinTable(code, name) {
-    setBusy(true, "Connecting…");
+    setBusy(true, "Verbinde …");
     try {
       await Net.join(code);
       const res = await send("join", { name, token });
       if (!res.ok) { Net.leave(); setBusy(false); render(); return; }
       store.set("bb_code", code); store.set("bb_role", "player"); setMode("table");
+      invite = null; clearInviteFromUrl();
       Net.request("progress", progress());
+      keepAwake();
     } catch (e) {
-      if (!name || mode === "table") forgetTable();
+      if (mode === "table") forgetTable();
       setBusy(false); toast(e.message); render(); return;
     }
     setBusy(false);
@@ -277,6 +337,7 @@
     store.del("bb_code"); store.del("bb_role");
     if (mode === "table") setMode("home");
     table = null; status = null; lastRound = null;
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   }
   function leaveTable() { Net.leave(); forgetTable(); }
 
@@ -291,7 +352,6 @@
     if (lastRound !== null && s.round !== lastRound) { card.draft = ""; card.locked = false; saveCard(); }
     lastRound = s.round;
     table = s;
-    if (params.get("code") && history.replaceState) history.replaceState(null, "", location.pathname);
     render();
   });
   Net.on("status", (msg) => { status = msg; showStatus(); });
@@ -299,15 +359,20 @@
     await Net.request("join", { token, name: store.get("bb_name") });
     Net.request("progress", progress());
   });
-  Net.on("kicked", () => { Net.leave(); forgetTable(); toast("You were removed from the table."); render(); });
+  Net.on("kicked", () => { Net.leave(); forgetTable(); toast("Du wurdest vom Tisch entfernt."); render(); });
 
-  // Pick up where we left off after a refresh.
+  // Nach einem Neuladen weitermachen.
   const savedCode = store.get("bb_code");
-  const linkCode = (params.get("code") || "").toUpperCase();
-  if (linkCode && linkCode !== savedCode) { if (mode === "table") setMode("home"); }
+  if (invite && invite === savedCode && mode === "table") { invite = null; clearInviteFromUrl(); }
+  if (invite && mode === "solo") setMode("home");
+  if (invite && mode === "table") { // Einladung zu einem anderen Tisch: alten verlassen
+    if (store.get("bb_role") === "host") store.del("bb_room_" + savedCode);
+    store.del("bb_code"); store.del("bb_role"); setMode("home");
+  }
   render();
-  if (mode === "table" && savedCode && (!linkCode || linkCode === savedCode)) {
-    if (store.get("bb_role") === "host") startTable(store.get("bb_name") || "Host", savedCode);
-    else joinTable(savedCode, store.get("bb_name"));
+  if (mode === "table" && store.get("bb_code")) {
+    if (store.get("bb_role") === "host") startTable(store.get("bb_name") || "Gastgeber", store.get("bb_code"));
+    else joinTable(store.get("bb_code"), store.get("bb_name"));
   } else if (mode === "table") { setMode("home"); render(); }
+  else if (invite && store.get("bb_name")) joinTable(invite, store.get("bb_name")); // Name bekannt: direkt rein
 })();

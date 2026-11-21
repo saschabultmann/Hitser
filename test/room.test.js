@@ -8,6 +8,7 @@ test("a table round: join, lock in, auto-reveal, next round", () => {
   room.onChange = () => changes++;
   assert.equal(room.handle("host", "join", { name: "Sascha" }).ok, true);
   assert.equal(room.handle("a", "join", { name: "sascha" }).ok, false, "name taken");
+  assert.match(room.handle("a", "join", { name: "sascha" }).error, /vergeben/);
   assert.equal(room.handle("a", "join", { name: "Ann" }).ok, true);
   assert.equal(room.handle("b", "join", { name: "Bob" }).ok, true);
   assert.equal(room.handle("a", "host:next").ok, false, "only the host");
