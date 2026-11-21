@@ -2,43 +2,50 @@ const test = require("node:test");
 const assert = require("node:assert");
 const Room = require("../docs/room");
 
-test("full round: join, lock, reveal, fill, save/restore", () => {
+test("a table round: join, lock in, auto-reveal, next round", () => {
   const room = new Room("ABCD", "host");
   let changes = 0;
   room.onChange = () => changes++;
-  assert.equal(room.handle("host", "join", {}).role, "host");
+  assert.equal(room.handle("host", "join", { name: "Sascha" }).ok, true);
+  assert.equal(room.handle("a", "join", { name: "sascha" }).ok, false, "name taken");
   assert.equal(room.handle("a", "join", { name: "Ann" }).ok, true);
-  assert.equal(room.handle("b", "join", { name: "ann" }).ok, false); // name taken
   assert.equal(room.handle("b", "join", { name: "Bob" }).ok, true);
-  assert.equal(room.handle("a", "host:next").ok, false); // not host
+  assert.equal(room.handle("a", "host:next").ok, false, "only the host");
+  assert.equal(room.handle("x", "lock", { answer: "hi" }).ok, false, "must join first");
 
-  room.handle("host", "host:deck", { text: "A - X - 1985\nB - Y - 1990\nC - Z - 2001\nD - W - 1972\nE - V - 1960" });
+  assert.equal(room.handle("a", "lock", { answer: "  " }).ok, false, "empty guess");
+  assert.equal(room.handle("a", "lock", { answer: "Take On Me 1985" }).ok, true);
+  assert.equal(room.viewFor("b").players.find((p) => p.name === "Ann").answer, null, "hidden from others");
+  assert.equal(room.viewFor("a").players.find((p) => p.name === "Ann").answer, "Take On Me 1985", "visible to yourself");
+  assert.equal(room.handle("a", "unlock").ok, true);
+  room.handle("a", "lock", { answer: "Take On Me 1984" });
+  room.handle("host", "lock", { answer: "1986" });
+  assert.equal(room.revealed, false);
+  room.handle("b", "lock", { answer: "1990" });
+  assert.equal(room.revealed, true, "reveals when everyone locked in");
+  assert.equal(room.viewFor("b").players.find((p) => p.name === "Ann").answer, "Take On Me 1984");
+  assert.equal(room.handle("a", "unlock").ok, false, "too late");
+
+  room.handle("a", "progress", { crossed: 5, bingo: true });
+  assert.equal(room.viewFor("host").players.find((p) => p.name === "Ann").bingo, true);
+
   assert.equal(room.handle("host", "host:next").ok, true);
-  assert.equal(room.viewFor("a").song, null, "players must not see the song");
-  const song = room.viewFor("host").song;
+  assert.equal(room.round, 2);
+  assert.equal(room.revealed, false);
+  assert.ok(room.viewFor("a").players.every((p) => !p.locked && !p.answer));
 
-  assert.equal(room.handle("a", "player:lock", { title: song.title, artist: song.artist, year: String(song.year) }).ok, true);
-  assert.equal(room.handle("a", "player:lock", { title: "again" }).ok, false);
-  assert.equal(room.viewFor("b").players.find((p) => p.name === "Ann").answer, null, "others can't see answers yet");
-  room.handle("b", "player:lock", { title: "nope", artist: "nobody", year: "1800" });
-  assert.equal(room.handle("host", "host:reveal").ok, true);
-
-  const a = room.viewFor("a").me;
-  assert.ok(a.eligible.length >= 6);
-  assert.equal(room.viewFor("b").me.eligible.length, 0);
-  assert.equal(room.handle("b", "player:fill", { index: 0 }).ok, false);
-  assert.equal(room.handle("a", "player:fill", { index: a.eligible[0] }).ok, true);
-  assert.equal(room.handle("a", "player:fill", { index: a.eligible[1] }).ok, false); // one per round
-
-  const bobId = room.viewFor("host").players.find((p) => p.name === "Bob").id;
-  room.handle("host", "host:override", { playerId: bobId, field: "title" });
-  assert.ok(room.viewFor("b").me.eligible.length > 0);
+  // a disconnected player doesn't block the reveal
+  room.setConnected("b", false);
+  room.handle("a", "lock", { answer: "x" });
+  room.handle("host", "lock", { answer: "y" });
+  assert.equal(room.revealed, true);
 
   const copy = new Room("ABCD", "host", JSON.parse(JSON.stringify(room.save())));
-  assert.equal(copy.viewFor("a").me.board.filter((s) => s.filled).length, 1);
-  assert.equal(copy.phase, "reveal");
-  assert.ok(changes > 5);
+  assert.equal(copy.round, 2);
+  assert.equal(copy.players.size, 3);
 
+  const bobId = room.viewFor("host").players.find((p) => p.name === "Bob").id;
   assert.equal(room.handle("host", "host:kick", { playerId: bobId }).ok, true);
-  assert.equal(room.players.size, 1);
+  assert.equal(room.players.size, 2);
+  assert.ok(changes > 5);
 });
