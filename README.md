@@ -1,53 +1,32 @@
 # Beatboard
 
-An online music-guessing bingo party game. One person hosts and plays music on a speaker, everyone else guesses on their phone and races to fill a row on their bingo board.
+A bingo card on your phone for music-guessing games you play at the table. No paper cards, no pens: everyone opens the page, writes their guess, locks it in and crosses off squares.
 
-## How a game works
+The site has no songs in it. You play the music and decide who was right yourselves, exactly as you would with paper cards.
 
-1. **Host** opens the site and clicks **Create a game**. A 4-letter code appears (plus a join link).
-2. **Players** open the site on their phones, enter the code and a name.
-3. The host clicks **Start** / **Next song** and plays the song on their speaker. The host screen has quick “Play on Spotify / YouTube” links; the song name stays hidden unless the host taps *Show song*, so the host screen can be shown on a TV.
-4. Each player types **title, artist and year** and taps **Lock in**. Locked answers can't be changed.
-5. The host clicks **Reveal**. Answers are checked automatically (typo-tolerant). The host can **flip** any title/artist verdict by hand.
-6. Every square your answer earns glows. **Tap one square per round** to fill it.
-7. A full **row, column or diagonal** is Bingo. The game keeps going until the host ends it, so you can play for 2nd and 3rd place.
+## How it works
 
-### Board squares
+1. One person enters their name and taps **Start a table**. They get a 4-letter code.
+2. Everyone else enters their name and the code and taps **Join**.
+3. Each round, everyone writes a guess on their whiteboard and taps **Lock in**. You can unlock to change your mind until the guesses are revealed.
+4. When everyone has locked in, all guesses appear on every phone. (The person who started the table can also tap **Reveal now**.)
+5. Cross off squares by tapping them. Tap again to undo. A full row, column or diagonal is **Bingo**, and everyone at the table sees it.
+6. The person who started the table taps **Next round**, which wipes everyone's guess.
 
-Each player gets a 4×4 board with the same 16 challenges in a random order:
+Don't need the shared table? **Just the card, no table** gives you a card on its own, with the same whiteboard and lock.
 
-| Square | You earn it when… |
-| --- | --- |
-| Title right / Artist right | that part of your answer is right |
-| Title + artist | both are right |
-| Perfect: all three | title, artist and exact year are right |
-| Exact year / Year ±2 / Year ±5 | your year is that close |
-| Right decade | your year is in the song's decade |
-| Anything right | title or artist right, or year within ±2 |
-| Oldie, 70s, 80s, 90s, 2000s, 2010s, 2020s song + decade | the song is from that era **and** you guessed its decade |
-
-## Songs
-
-A starter deck of 60 well-known songs (1958–2023) is built in. In the lobby the host can paste their own list, one song per line:
-
-```
-Wonderwall - Oasis - 1995
-Song 2; Blur; 1997
-```
-
-The app only stores song facts; the host plays the music from their own source.
+Each card has 25 squares in 5 colours, shuffled. **New card** (tap twice) deals a fresh one. Your card, crosses and guess are saved on your phone, so a refresh doesn't lose anything.
 
 ## How it runs (no server)
 
-Beatboard is a static website, so it can be hosted on **GitHub Pages**. The game itself runs in the **host's browser**: players connect to the host directly over WebRTC using [PeerJS](https://peerjs.com). PeerJS's free public broker is only used to find each other.
+Beatboard is a static website hosted on **GitHub Pages**. The table runs on the phone of the person who started it, and the other phones connect to it directly over WebRTC using [PeerJS](https://peerjs.com). PeerJS's free public broker is only used to find each other.
 
-- The host must keep their game page open. If the host refreshes, the game is restored from their browser storage and players reconnect automatically.
-- Players who refresh or lose connection rejoin automatically.
-- Some strict networks (corporate Wi-Fi, some mobile carriers) block peer-to-peer connections. If a player can't connect, switching between Wi-Fi and mobile data usually helps.
+- The person who started the table should keep the page open. If they refresh, the table comes back and everyone reconnects automatically.
+- Some strict networks (corporate Wi-Fi, some mobile carriers) block peer-to-peer connections. If a phone can't connect, switching between Wi-Fi and mobile data usually helps. Solo cards work offline.
 
 ### Publish on GitHub Pages
 
-In the repository go to **Settings → Pages**, set **Source** to *Deploy from a branch*, pick branch `main` and folder `/docs`, and save. The game appears at `https://<user>.github.io/<repo>/` a minute later.
+**Settings → Pages**: *Deploy from a branch*, branch `main`, folder `/docs`.
 
 ### Run locally
 
@@ -60,11 +39,9 @@ To use your own PeerJS server instead of the public one, add `?peerhost=<host>&p
 
 ## Project layout
 
-- `docs/`: the whole game (no build step)
-  - `game.js`: rules, board squares, answer matching, bingo check
-  - `room.js`: the game room that runs in the host's browser
+- `docs/`: the whole site (no build step)
+  - `app.js`: home screen, the card, the whiteboard and the table view
+  - `room.js`: the table (players, lock-ins, reveal, rounds), runs on the starter's phone
   - `net.js`: peer-to-peer networking (PeerJS)
-  - `app.js`: screens for home, host and players
-  - `songs.js`: starter deck
   - `peerjs.min.js`: vendored PeerJS 1.5.4 (MIT)
-- `test/`: unit tests for the rules and a full round through the room
+- `test/`: tests for the table logic

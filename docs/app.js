@@ -1,8 +1,11 @@
-/* Beatboard client: one page, three screens (home, host, player). */
+/* Beatboard: a phone bingo card for music-guessing games played at the table.
+   Solo: just the card. Table: join by code, lock in guesses, reveal together. */
 (() => {
   const Net = window.BBNet;
+  const N = 5;
   const $app = document.getElementById("app");
   const $top = document.getElementById("topInfo");
+  const params = new URLSearchParams(location.search);
 
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
@@ -12,291 +15,270 @@
   let token = store.get("bb_token");
   if (!token) { token = Math.random().toString(36).slice(2) + Date.now().toString(36); store.set("bb_token", token); }
 
-  let state = null; // last state from the server
-  let draft = { title: "", artist: "", year: "" };
-  let draftRound = 0;
-  let peek = false; // host: show the current song on screen
-  let lastWinners = 0;
-  const params = new URLSearchParams(location.search);
+  // ---------- the card (always local to this phone) ----------
+  function freshCard() {
+    const colors = [];
+    for (let c = 1; c <= N; c++) for (let i = 0; i < N; i++) colors.push(c);
+    for (let i = colors.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [colors[i], colors[j]] = [colors[j], colors[i]]; }
+    return { colors, crossed: colors.map(() => false), lines: 0, draft: "", locked: false };
+  }
+  let card;
+  try { card = JSON.parse(store.get("bb_card")); } catch {}
+  if (!card || !Array.isArray(card.colors) || card.colors.length !== N * N) card = freshCard();
+  const saveCard = () => store.set("bb_card", JSON.stringify(card));
+
+  function winningLines() {
+    const lines = [];
+    for (let i = 0; i < N; i++) {
+      const row = [], col = [];
+      for (let j = 0; j < N; j++) { row.push(i * N + j); col.push(j * N + i); }
+      lines.push(row, col);
+    }
+    lines.push([...Array(N)].map((_, i) => i * N + i), [...Array(N)].map((_, i) => i * N + (N - 1 - i)));
+    return lines.filter((l) => l.every((i) => card.crossed[i]));
+  }
+
+  // ---------- app state ----------
+  let mode = store.get("bb_mode") || "home"; // home | solo | table
+  let table = null; // state from the table host
+  let lastRound = null;
+  let busy = false;
+  let status = null;
+  let confirmNew = 0;
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
   function toast(msg) {
     const t = document.getElementById("toast");
     t.textContent = msg; t.hidden = false;
-    clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2800);
+    clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2600);
   }
-  async function emit(ev, data) {
+  function confetti() {
+    const c = document.createElement("div"); c.className = "confetti";
+    const colors = ["#33c47a", "#3fb5f0", "#b061e0", "#f2e24a", "#f2549c"];
+    for (let i = 0; i < 80; i++) {
+      const p = document.createElement("i");
+      p.style.left = Math.random() * 100 + "vw"; p.style.background = colors[i % colors.length];
+      p.style.animationDelay = Math.random() * 0.8 + "s"; c.appendChild(p);
+    }
+    document.body.appendChild(c); setTimeout(() => c.remove(), 3800);
+  }
+  async function send(ev, data) {
     const res = (await Net.request(ev, data || {})) || {};
     if (!res.ok && res.error) toast(res.error);
     return res;
   }
-  let busy = false;
-  let status = null; // connection problem shown on top
-  function setBusy(b, label) {
-    busy = b;
-    const btns = document.querySelectorAll("#joinBtn, #hostBtn");
-    btns.forEach((x) => { x.disabled = b; });
-    if (b && label) toast(label);
-    if (!b && toast.t) { clearTimeout(toast.t); document.getElementById("toast").hidden = true; }
-  }
-  function confetti() {
-    const c = document.createElement("div"); c.className = "confetti";
-    const colors = ["#ff5fa2", "#3ee0c4", "#ffd166", "#9b7bff"];
-    for (let i = 0; i < 80; i++) {
-      const p = document.createElement("i");
-      p.style.left = Math.random() * 100 + "vw";
-      p.style.background = colors[i % colors.length];
-      p.style.animationDelay = Math.random() * 0.8 + "s";
-      c.appendChild(p);
-    }
-    document.body.appendChild(c); setTimeout(() => c.remove(), 3800);
-  }
+  function setMode(m) { mode = m; store.set("bb_mode", m); }
 
   // ---------- rendering ----------
   function render() {
-    // Keep focus and cursor in inputs across re-renders.
     const a = document.activeElement;
-    const focusId = a && a.id; const sel = a && a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null;
-    if (!state) renderHome(); else if (state.isHost) renderHost(); else renderPlayer();
-    if (focusId) { const el = document.getElementById(focusId); if (el) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(...sel); } catch {} } }
+    const focusId = a && a.id;
+    const sel = a && a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null;
+    if (mode === "solo") renderCard(false);
+    else if (mode === "table" && table && table.me) renderCard(true);
+    else renderHome();
+    if (focusId) {
+      const el = document.getElementById(focusId);
+      if (el && !el.readOnly) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(...sel); } catch {} }
+    }
+    showStatus();
   }
 
   function renderHome() {
     $top.textContent = "";
     $app.innerHTML = `
-      <section class="hero">
-        <h1>Guess the song. Fill your board.</h1>
-        <p class="muted">A party game for one room: the host plays music, everyone guesses on their phone.</p>
-      </section>
-      <div class="grid2">
-        <div class="panel">
-          <h2>Join a game</h2>
-          <label for="code">Game code</label>
-          <input id="code" class="code-input" maxlength="4" autocomplete="off" value="${esc(params.get("code") || "")}" />
-          <label for="name">Your name</label>
-          <input id="name" maxlength="20" autocomplete="nickname" value="${esc(store.get("bb_name") || "")}" />
-          <p></p><button id="joinBtn" class="primary big">Join</button>
+      <div class="panel">
+        <h2>Your bingo card, on your phone</h2>
+        <p class="muted" style="margin-top:0">Write your guess, lock it in, and cross off squares. Everyone at the table opens this page on their own phone.</p>
+        <label for="name">Your name</label>
+        <input id="name" maxlength="20" autocomplete="nickname" value="${esc(store.get("bb_name") || "")}" />
+        <p></p>
+        <button id="hostBtn" class="primary big" ${busy ? "disabled" : ""}>Start a table</button>
+        <div class="or">or join one</div>
+        <div class="row">
+          <input id="code" class="code-input" maxlength="4" autocomplete="off" placeholder="CODE" value="${esc(params.get("code") || "")}" />
+          <button id="joinBtn" class="alt" ${busy ? "disabled" : ""}>Join</button>
         </div>
-        <div class="panel">
-          <h2>Host a game</h2>
-          <ol class="steps">
-            <li>Create a game and share the code.</li>
-            <li>Play each song on your speaker (Spotify, YouTube, records).</li>
-            <li>Players type title, artist and year, then lock in.</li>
-            <li>Reveal: correct guesses let players fill a square.</li>
-            <li>First full row, column or diagonal shouts Bingo!</li>
-          </ol>
-          <button id="hostBtn" class="alt big">Create a game</button>
-        </div>
-      </div>`;
-    document.getElementById("joinBtn").onclick = async () => {
-      const code = document.getElementById("code").value.trim().toUpperCase();
-      const name = document.getElementById("name").value.trim();
+      </div>
+      <p class="center"><button id="soloBtn" class="ghost">Just the card, no table</button></p>`;
+    const name = () => { const n = document.getElementById("name").value.trim(); if (n) store.set("bb_name", n); return n; };
+    document.getElementById("hostBtn").onclick = () => { const n = name(); if (!n) return toast("Enter your name first."); startTable(n); };
+    document.getElementById("joinBtn").onclick = () => {
+      const n = name(); const code = document.getElementById("code").value.trim().toUpperCase();
+      if (!n) return toast("Enter your name first.");
       if (code.length !== 4) return toast("Enter the 4-letter code.");
-      if (!name) return toast("Enter your name.");
-      store.set("bb_name", name);
-      await joinGame(code, name);
+      joinTable(code, n);
     };
-    document.getElementById("name").onkeydown = (e) => { if (e.key === "Enter") document.getElementById("joinBtn").click(); };
-    document.getElementById("hostBtn").onclick = () => hostGame();
-    if (busy) setBusy(true);
+    document.getElementById("code").onkeydown = (e) => { if (e.key === "Enter") document.getElementById("joinBtn").click(); };
+    document.getElementById("soloBtn").onclick = () => { setMode("solo"); render(); };
   }
 
-  function playerChips(s) {
-    if (!s.players.length) return `<p class="muted">Waiting for players to join…</p>`;
-    return `<ul class="players">${s.players.map((p) => `
-      <li class="chip ${p.connected ? "" : "off"} ${p.locked && s.phase === "playing" ? "locked" : ""} ${p.bingo ? "bingo" : ""}">
-        ${esc(p.name)} <span class="muted">${p.filledCount}/16</span>
-        ${s.phase === "playing" ? (p.locked ? "🔒" : "…") : ""}
-        ${s.isHost && s.phase === "lobby" ? `<button data-kick="${p.id}" title="Remove">✕</button>` : ""}
-      </li>`).join("")}</ul>`;
-  }
-
-  function songBlock(song, spinning) {
-    return `<div class="song">
-      <div class="vinyl ${spinning ? "spin" : ""}"></div>
-      ${song ? `<div class="title">${esc(song.title)}</div><div class="artist">${esc(song.artist)}</div><div class="year">${esc(song.year)}</div>` : ""}
+  function slateHtml(inTable) {
+    const t = table, me = t && t.me;
+    const locked = inTable ? me.locked : card.locked;
+    const text = inTable && locked ? me.answer : card.draft;
+    let buttons = "", hint = "";
+    if (!inTable) {
+      buttons = `<button id="lockBtn" class="${locked ? "ghost" : "primary"}">${locked ? "Unlock" : "Lock in"}</button><button id="wipeBtn" class="ghost">Wipe</button>`;
+    } else if (!t.revealed) {
+      const active = t.players.filter((p) => p.connected);
+      const n = active.filter((p) => p.locked).length;
+      buttons = locked ? `<button id="unlockBtn" class="ghost">Unlock</button>` : `<button id="lockBtn" class="primary">Lock in</button>`;
+      if (t.isHost) buttons += `<button id="revealBtn" class="alt">Reveal now</button>`;
+      hint = `${n} of ${active.length} locked in. Guesses show when everyone has locked in.`;
+    } else {
+      buttons = t.isHost ? `<button id="nextBtn" class="primary">Next round</button>` : "";
+      hint = t.isHost ? "Check the answer, cross off your squares, then start the next round." : "Guesses revealed! Cross off your squares. The next round starts when the host taps Next round.";
+    }
+    return `<div class="panel" style="padding:12px">
+      <div class="slate ${locked ? "locked" : ""}">
+        <textarea id="answer" maxlength="120" placeholder="Write your guess…" aria-label="Your guess" ${locked ? "readonly" : ""}>${esc(text)}</textarea>
+        ${locked ? `<span class="badge">🔒</span>` : ""}
+      </div>
+      ${buttons ? `<div class="actions">${buttons}</div>` : ""}
+      ${hint ? `<p class="hint">${hint}</p>` : ""}
     </div>`;
   }
 
-  function winnersBanner(s) {
-    if (!s.winners.length) return "";
-    return `<div class="banner">🎉 Bingo! ${s.winners.map(esc).join(", ")}</div>`;
+  function gridHtml() {
+    const lines = winningLines();
+    const win = new Set(lines.flat());
+    const n = card.crossed.filter(Boolean).length;
+    return `
+      ${lines.length ? `<div class="banner">🎉 Bingo!${lines.length > 1 ? ` ×${lines.length}` : ""}</div>` : ""}
+      <div class="meta"><span>${n} of ${N * N} crossed</span><span>Tap a square to cross it off</span></div>
+      <div id="grid" class="cgrid" aria-label="Bingo card">${card.colors.map((c, i) =>
+        `<div class="cell c${c} ${card.crossed[i] ? "x" : ""} ${win.has(i) ? "win" : ""}" data-i="${i}" role="button" aria-pressed="${card.crossed[i]}" aria-label="Square ${i + 1}"></div>`).join("")}</div>`;
   }
 
-  function renderHost() {
-    const s = state;
-    $top.innerHTML = `Host · Round ${s.round}/${s.totalSongs}`;
-    const joinUrl = `${location.origin}${location.pathname}?code=${s.code}`;
-    const locked = s.players.filter((p) => p.locked).length;
-    let main = "";
-    if (s.phase === "lobby") {
-      main = `
-        <div class="panel">
-          <h2>Songs</h2>
-          <p class="muted">Using <b>${esc(s.deckName)}</b> (${s.totalSongs} songs). To use your own, paste one per line as <code>Title - Artist - Year</code>. Leave empty to go back to the starter deck.</p>
-          <textarea id="deck" placeholder="Wonderwall - Oasis - 1995"></textarea>
-          <p></p><button id="deckBtn" class="ghost">Use these songs</button>
-        </div>
-        <button id="nextBtn" class="primary big" ${s.players.length ? "" : "disabled"}>Start with the first song</button>`;
-    } else if (s.phase === "playing") {
-      const q = encodeURIComponent(`${s.song.title} ${s.song.artist}`);
-      main = `
-        <div class="panel center">
-          <h2>Now playing: song ${s.round}</h2>
-          ${songBlock(peek ? s.song : null, true)}
-          <div class="row" style="justify-content:center">
-            <button id="peekBtn" class="ghost">${peek ? "Hide song" : "Show song (host only)"}</button>
-            <a href="https://open.spotify.com/search/${q}" target="_blank" rel="noopener">Play on Spotify</a>
-            <a href="https://www.youtube.com/results?search_query=${q}" target="_blank" rel="noopener">Play on YouTube</a>
-          </div>
-          <p class="muted">${locked}/${s.players.length} players locked in</p>
-          <button id="revealBtn" class="alt big">Reveal the answer</button>
-        </div>`;
-    } else if (s.phase === "reveal" || s.phase === "ended") {
-      const rows = s.players.map((p) => {
-        const a = p.answer, r = p.result;
-        const mark = (v) => (v ? `<span class="ok">✓</span>` : `<span class="no">✗</span>`);
-        const tog = (f) => s.phase === "reveal" && r ? `<button class="ghost toggle" data-ov="${p.id}" data-field="${f}" title="Flip this result">flip</button>` : "";
-        if (!a) return `<tr><td>${esc(p.name)}</td><td colspan="3" class="muted">No answer</td><td>${p.filledThisRound ? "✓" : ""}</td></tr>`;
-        return `<tr>
-          <td>${esc(p.name)}</td>
-          <td>${r ? mark(r.title) : ""} ${esc(a.title) || "<span class='muted'>–</span>"} ${tog("title")}</td>
-          <td>${r ? mark(r.artist) : ""} ${esc(a.artist) || "<span class='muted'>–</span>"} ${tog("artist")}</td>
-          <td>${esc(a.year) || "–"} ${r && r.yearDiff != null ? `<span class="muted">(${r.yearDiff === 0 ? "exact" : "off by " + r.yearDiff})</span>` : ""}</td>
-          <td>${p.filledThisRound ? "✓" : ""}</td></tr>`;
-      }).join("");
-      main = `
-        <div class="panel">
-          ${s.song ? songBlock(s.song, false) : ""}
-          <div class="table-wrap"><table>
-            <tr><th>Player</th><th>Title</th><th>Artist</th><th>Year</th><th>Filled</th></tr>${rows}
-          </table></div>
-          <p class="muted">Typos are matched loosely. Use “flip” if you want to accept or reject an answer by hand.</p>
-        </div>
-        ${s.phase === "reveal" ? `<button id="nextBtn" class="primary big" ${s.round >= s.totalSongs ? "disabled" : ""}>Next song</button>` : `<div class="banner">Game over</div>`}`;
+  function tableHtml() {
+    const t = table;
+    return `<div class="panel">
+      <h2>At the table</h2>
+      <ul class="people">${t.players.map((p) => {
+        const ans = p.answer
+          ? `<span class="ans ${t.revealed ? "shown" : ""}">${esc(p.answer)}</span>`
+          : `<span class="ans">${p.locked ? "🔒 locked in" : t.revealed ? "–" : "thinking…"}</span>`;
+        return `<li class="${p.connected ? "" : "off"}">
+          <span class="who">${esc(p.name)}${p.id === t.me.id ? " (you)" : ""}</span>
+          ${ans}
+          <span class="score">${p.bingo ? `<span class="tag">BINGO</span>` : `${p.crossed}/25`}</span>
+          ${t.isHost && !p.host ? `<button class="kick" data-kick="${p.id}" title="Remove from table">✕</button>` : ""}
+        </li>`;
+      }).join("")}</ul>
+      <p class="hint">Others join with code <b>${esc(t.code)}</b> on this page.</p>
+    </div>`;
+  }
+
+  function renderCard(inTable) {
+    if (inTable) {
+      $top.innerHTML = `Table <b>${esc(table.code)}</b> · Round ${table.round}`;
+    } else {
+      $top.textContent = "";
     }
     $app.innerHTML = `
-      ${winnersBanner(s)}
-      <div class="panel center">
-        <div class="muted">Join at <a href="${esc(joinUrl)}">${esc(joinUrl)}</a> with code</div>
-        <div class="code">${s.code}</div>
-      </div>
-      <div class="panel"><h2>Players (${s.players.length})</h2>${playerChips(s)}</div>
-      ${main}
-      ${s.phase !== "ended" && s.phase !== "lobby" ? `<p class="center"><button id="endBtn" class="ghost">End game</button></p>` : ""}
-      ${s.phase === "ended" || s.phase === "lobby" ? `<p class="center"><button id="newBtn" class="ghost">${s.phase === "ended" ? "Start a new game" : "Cancel this game"}</button></p>` : ""}
-      <p class="center muted">Keep this page open: the game runs in this browser.</p>`;
+      ${slateHtml(inTable)}
+      ${gridHtml()}
+      ${inTable ? tableHtml() : ""}
+      <p class="center" style="margin-top:20px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap">
+        <button id="newBtn" class="ghost small">New card</button>
+        <button id="leaveBtn" class="ghost small">${inTable ? "Leave table" : "Back"}</button>
+      </p>
+      ${inTable && table.isHost ? `<p class="hint">Keep this page open: the table runs on your phone.</p>` : ""}`;
 
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
-    on("nextBtn", () => { peek = false; emit("host:next"); });
-    on("revealBtn", () => emit("host:reveal"));
-    on("peekBtn", () => { peek = !peek; render(); });
-    on("endBtn", () => emit("host:end"));
-    on("newBtn", () => { forget(); render(); });
-    on("deckBtn", async () => {
-      const res = await emit("host:deck", { text: document.getElementById("deck").value });
-      if (res.ok) toast(`Loaded ${res.count} songs${res.errors.length ? `, skipped ${res.errors.length} lines` : ""}.`);
+    const answer = document.getElementById("answer");
+    if (!answer.readOnly) answer.oninput = () => { card.draft = answer.value; saveCard(); };
+    on("lockBtn", async () => {
+      if (!card.draft.trim()) return toast("Write a guess first.");
+      if (!inTable) { card.locked = true; saveCard(); return render(); }
+      await send("lock", { answer: card.draft });
     });
-    $app.querySelectorAll("[data-ov]").forEach((b) => (b.onclick = () => emit("host:override", { playerId: b.dataset.ov, field: b.dataset.field })));
-    $app.querySelectorAll("[data-kick]").forEach((b) => (b.onclick = () => emit("host:kick", { playerId: b.dataset.kick })));
-  }
+    on("unlockBtn", () => send("unlock"));
+    on("wipeBtn", () => { card.draft = ""; card.locked = false; saveCard(); render(); document.getElementById("answer").focus(); });
+    if (!inTable && card.locked) on("lockBtn", () => { card.locked = false; saveCard(); render(); });
+    on("revealBtn", () => send("host:reveal"));
+    on("nextBtn", () => send("host:next"));
+    $app.querySelectorAll("[data-kick]").forEach((b) => (b.onclick = () => send("host:kick", { playerId: b.dataset.kick })));
 
-  function boardHtml(me, squares) {
-    return `<div class="board">${me.board.map((sq, i) => {
-      const el = me.eligible.includes(i);
-      return `<div class="sq ${sq.filled ? "filled" : ""} ${el ? "eligible" : ""}" ${el ? `data-fill="${i}" role="button" tabindex="0"` : ""}>${esc(squares[sq.key])}</div>`;
-    }).join("")}</div>`;
-  }
-
-  function renderPlayer() {
-    const s = state, me = s.me;
-    if (!me) return renderHome();
-    $top.innerHTML = `${esc(me.name)} · ${s.code}${s.round ? ` · Round ${s.round}` : ""}`;
-    if (draftRound !== s.round) { draft = { title: "", artist: "", year: "" }; draftRound = s.round; }
-    let top = "";
-    if (s.phase === "lobby") {
-      top = `<div class="panel center"><h2>You're in!</h2><p class="muted">Waiting for the host to start. ${s.players.length} player${s.players.length === 1 ? "" : "s"} here.</p></div>`;
-    } else if (s.phase === "playing" && !me.locked) {
-      top = `<div class="panel">
-        <h2>Song ${s.round}: what is it?</h2>
-        <label for="aTitle">Title</label><input id="aTitle" maxlength="80" autocomplete="off" value="${esc(draft.title)}" />
-        <label for="aArtist">Artist</label><input id="aArtist" maxlength="80" autocomplete="off" value="${esc(draft.artist)}" />
-        <label for="aYear">Year</label><input id="aYear" inputmode="numeric" maxlength="4" autocomplete="off" value="${esc(draft.year)}" />
-        <p></p><button id="lockBtn" class="primary big">Lock in</button>
-        <p class="muted center">You can't change your answer after locking in.</p>
-      </div>`;
-    } else if (s.phase === "playing") {
-      const a = me.answer || {};
-      top = `<div class="panel center"><h2>🔒 Locked in</h2>
-        <p>${esc(a.title) || "–"} · ${esc(a.artist) || "–"} · ${esc(a.year) || "–"}</p>
-        <p class="muted">Waiting for the reveal…</p></div>`;
-    } else if (s.phase === "reveal") {
-      const r = me.result;
-      const mark = (v, t) => `<span class="${v ? "ok" : "no"}">${v ? "✓" : "✗"} ${t}</span>`;
-      const msg = !r ? "You didn't lock in an answer this round."
-        : me.filledThisRound ? "Square filled. Wait for the next song."
-        : me.eligible.length ? "Tap a glowing square to fill it." : "No square this time. Next song coming up!";
-      top = `<div class="panel">${songBlock(s.song, false)}
-        ${r ? `<div class="result-line">${mark(r.title, "Title")}${mark(r.artist, "Artist")}${mark(r.yearDiff === 0, r.yearDiff == null ? "Year" : r.yearDiff === 0 ? "Year exact" : `Year off by ${r.yearDiff}`)}</div>` : ""}
-        <p class="center"><b>${msg}</b></p></div>`;
-    } else {
-      top = `<div class="panel center"><h2>Game over</h2><p class="muted">Thanks for playing!</p>
-        <button id="leaveBtn" class="ghost">Back to start</button></div>`;
-    }
-    $app.innerHTML = `${winnersBanner(s)}${me.bingo ? `<div class="banner">You have Bingo! 🎶</div>` : ""}${top}
-      <div class="panel"><h2 class="center">Your board</h2>${boardHtml(me, s.squares)}</div>
-      <div class="panel"><h2>Players</h2>${playerChips(s)}</div>`;
-
-    const bind = (id, k) => { const el = document.getElementById(id); if (el) el.oninput = () => (draft[k] = el.value); };
-    bind("aTitle", "title"); bind("aArtist", "artist"); bind("aYear", "year");
-    const lock = document.getElementById("lockBtn");
-    if (lock) lock.onclick = () => emit("player:lock", draft);
-    $app.querySelectorAll("input").forEach((i) => (i.onkeydown = (e) => { if (e.key === "Enter" && lock) lock.click(); }));
-    $app.querySelectorAll("[data-fill]").forEach((el) => {
-      const go = async () => { const res = await emit("player:fill", { index: Number(el.dataset.fill) }); if (res.bingo && res.ok) confetti(); };
-      el.onclick = go; el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") go(); };
+    document.getElementById("grid").onclick = (e) => {
+      const el = e.target.closest("[data-i]");
+      if (!el) return;
+      const i = Number(el.dataset.i);
+      card.crossed[i] = !card.crossed[i];
+      afterCardChange();
+    };
+    on("newBtn", () => {
+      const b = document.getElementById("newBtn");
+      if (Date.now() - confirmNew > 3000) { confirmNew = Date.now(); b.textContent = "Tap again for a new card"; return; }
+      confirmNew = 0;
+      const draft = card.draft, locked = card.locked;
+      card = freshCard(); card.draft = draft; card.locked = locked;
+      afterCardChange(); toast("Fresh card!");
     });
-    const leave = document.getElementById("leaveBtn");
-    if (leave) leave.onclick = () => { forget(); render(); };
+    on("leaveBtn", () => {
+      if (inTable) leaveTable(); else setMode("home");
+      render();
+    });
   }
 
-  // ---------- networking ----------
-  function forget() {
-    const code = store.get("bb_code");
-    if (store.get("bb_role") === "host" && code) store.del("bb_room_" + code);
-    store.del("bb_code"); store.del("bb_role");
-    Net.leave(); state = null; status = null;
+  function afterCardChange() {
+    const lines = winningLines().length;
+    if (lines > card.lines) { confetti(); if (navigator.vibrate) navigator.vibrate([80, 60, 160]); }
+    card.lines = lines;
+    saveCard();
+    render();
+    if (mode === "table" && table) Net.request("progress", { crossed: card.crossed.filter(Boolean).length, bingo: lines > 0 });
   }
 
-  async function hostGame(code) {
-    setBusy(true, code ? "Reopening your game…" : "Creating a game…");
+  // ---------- table networking ----------
+  function setBusy(b, label) {
+    busy = b;
+    document.querySelectorAll("#joinBtn, #hostBtn").forEach((x) => (x.disabled = b));
+    if (b && label) toast(label);
+    if (!b) { clearTimeout(toast.t); document.getElementById("toast").hidden = true; }
+  }
+  const progress = () => ({ crossed: card.crossed.filter(Boolean).length, bingo: winningLines().length > 0 });
+
+  async function startTable(name, code) {
+    setBusy(true, code ? "Reopening your table…" : "Starting a table…");
     let saved = null;
     if (code) { try { saved = JSON.parse(store.get("bb_room_" + code)); } catch {} }
     try {
       const res = await Net.host({ token, code, saved });
-      store.set("bb_code", res.code); store.set("bb_role", "host");
+      store.set("bb_code", res.code); store.set("bb_role", "host"); setMode("table");
+      await Net.request("join", { name, token });
+      await Net.request("progress", progress());
     } catch (e) {
-      if (code) { store.del("bb_code"); store.del("bb_role"); }
+      if (code) forgetTable();
       setBusy(false); toast(e.message); return;
     }
     setBusy(false);
   }
 
-  async function joinGame(code, name) {
+  async function joinTable(code, name) {
     setBusy(true, "Connecting…");
     try {
       await Net.join(code);
-      const res = await emit("join", { code, name, token });
-      if (res.ok) { store.set("bb_code", code); store.set("bb_role", "player"); }
-      else Net.leave();
+      const res = await send("join", { name, token });
+      if (!res.ok) { Net.leave(); setBusy(false); render(); return; }
+      store.set("bb_code", code); store.set("bb_role", "player"); setMode("table");
+      Net.request("progress", progress());
     } catch (e) {
-      if (!name) { store.del("bb_code"); store.del("bb_role"); }
-      setBusy(false); toast(e.message); return;
+      if (!name || mode === "table") forgetTable();
+      setBusy(false); toast(e.message); render(); return;
     }
     setBusy(false);
   }
+
+  function forgetTable() {
+    const code = store.get("bb_code");
+    if (store.get("bb_role") === "host" && code) store.del("bb_room_" + code);
+    store.del("bb_code"); store.del("bb_role");
+    if (mode === "table") setMode("home");
+    table = null; status = null; lastRound = null;
+  }
+  function leaveTable() { Net.leave(); forgetTable(); }
 
   function showStatus() {
     let el = document.getElementById("status");
@@ -306,22 +288,26 @@
   }
 
   Net.on("state", (s) => {
-    if (s.winners.length > lastWinners && state) { if (!s.me || !s.me.bingo) toast(`Bingo for ${s.winners[s.winners.length - 1]}!`); }
-    lastWinners = s.winners.length;
-    state = s;
-    if (history.replaceState && params.get("code")) history.replaceState(null, "", location.pathname + location.search.replace(/([?&])code=[^&]*&?/, "$1").replace(/[?&]$/, ""));
+    if (lastRound !== null && s.round !== lastRound) { card.draft = ""; card.locked = false; saveCard(); }
+    lastRound = s.round;
+    table = s;
+    if (params.get("code") && history.replaceState) history.replaceState(null, "", location.pathname);
     render();
   });
   Net.on("status", (msg) => { status = msg; showStatus(); });
-  Net.on("reconnected", () => emit("join", { code: store.get("bb_code"), token, name: store.get("bb_name") }));
-  Net.on("kicked", () => { forget(); toast("The host removed you from the game."); render(); });
+  Net.on("reconnected", async () => {
+    await Net.request("join", { token, name: store.get("bb_name") });
+    Net.request("progress", progress());
+  });
+  Net.on("kicked", () => { Net.leave(); forgetTable(); toast("You were removed from the table."); render(); });
 
   // Pick up where we left off after a refresh.
   const savedCode = store.get("bb_code");
   const linkCode = (params.get("code") || "").toUpperCase();
+  if (linkCode && linkCode !== savedCode) { if (mode === "table") setMode("home"); }
   render();
-  if (savedCode && (!linkCode || linkCode === savedCode)) {
-    if (store.get("bb_role") === "host") hostGame(savedCode);
-    else joinGame(savedCode, null);
-  }
+  if (mode === "table" && savedCode && (!linkCode || linkCode === savedCode)) {
+    if (store.get("bb_role") === "host") startTable(store.get("bb_name") || "Host", savedCode);
+    else joinTable(savedCode, store.get("bb_name"));
+  } else if (mode === "table") { setMode("home"); render(); }
 })();

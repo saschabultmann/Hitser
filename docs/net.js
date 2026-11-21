@@ -2,7 +2,7 @@
 // Room; players connect to it directly. PeerJS's free public broker is only
 // used to find each other, so the game works on static hosting like GitHub Pages.
 (function (root) {
-  const PREFIX = "beatboard-v1-";
+  const PREFIX = "beatboard-table-v1-";
   const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
   const listeners = {};
   const emitLocal = (ev, x) => (listeners[ev] || []).forEach((fn) => fn(x));
@@ -62,10 +62,12 @@
     c.on("open", () => conns.add(c));
     c.on("data", (msg) => {
       if (!msg || msg.t !== "req" || !room) return;
-      if (msg.ev === "join" && msg.data && msg.data.token) c.token = String(msg.data.token).slice(0, 64);
-      if (!c.token) return c.send({ t: "res", id: msg.id, res: { ok: false, error: "Join first." } });
-      if (c.token === hostToken) return c.send({ t: "res", id: msg.id, res: { ok: false, error: "Not allowed." } });
-      const res = room.handle(c.token, msg.ev, msg.data);
+      let token = c.token;
+      if (msg.ev === "join" && msg.data && msg.data.token) token = String(msg.data.token).slice(0, 64);
+      if (!token) return c.send({ t: "res", id: msg.id, res: { ok: false, error: "Join first." } });
+      if (token === hostToken) return c.send({ t: "res", id: msg.id, res: { ok: false, error: "Not allowed." } });
+      const res = room.handle(token, msg.ev, msg.data);
+      if (res.ok && msg.ev === "join") c.token = token;
       c.send({ t: "res", id: msg.id, res });
       if (res.ok && msg.ev === "join") c.send({ t: "state", s: room.viewFor(c.token) });
     });
