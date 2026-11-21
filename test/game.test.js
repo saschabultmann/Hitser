@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const G = require("../src/game");
+const G = require("../docs/game");
 
 const song = { title: "(I Can't Get No) Satisfaction", artist: "The Rolling Stones", year: 1965 };
 

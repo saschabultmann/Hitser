@@ -1,7 +1,8 @@
 // Starter deck: song facts only (title, artist, release year).
 // The host plays the music themselves (Spotify, YouTube, vinyl...).
 // Hosts can paste their own list in the lobby instead.
-module.exports = [
+(function (root) {
+const SONGS = [
   { title: "Johnny B. Goode", artist: "Chuck Berry", year: 1958 },
   { title: "Twist and Shout", artist: "The Beatles", year: 1963 },
   { title: "My Girl", artist: "The Temptations", year: 1964 },
@@ -63,3 +64,5 @@ module.exports = [
   { title: "As It Was", artist: "Harry Styles", year: 2022 },
   { title: "Flowers", artist: "Miley Cyrus", year: 2023 },
 ];
+if (typeof module !== "undefined" && module.exports) module.exports = SONGS; else root.BBSongs = SONGS;
+})(typeof self !== "undefined" ? self : this);

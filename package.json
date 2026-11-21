@@ -1,22 +1,18 @@
 {
   "name": "beatboard",
   "version": "1.0.0",
-  "description": "Online music-guessing bingo party game",
-  "main": "src/server.js",
+  "description": "Online music-guessing bingo party game (runs in the browser, peer-to-peer)",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "npx --yes http-server docs -p 8080 -c-1",
     "test": "node --test test/*.test.js"
   },
   "author": "",
   "license": "MIT",
-  "dependencies": {
-    "express": "^4.22.3",
-    "socket.io": "^4.8.4"
-  },
-  "devDependencies": {
-    "socket.io-client": "^4.8.4"
-  },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "peer": "^1.0.2",
+    "peerjs": "^1.5.4"
   }
 }

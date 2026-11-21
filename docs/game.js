@@ -1,5 +1,6 @@
 // Pure game logic for Beatboard. No sockets in here, so it can be unit tested.
-const DEFAULT_SONGS = require("./songs");
+(function (root) {
+const DEFAULT_SONGS = typeof module !== "undefined" && module.exports ? require("./songs") : root.BBSongs;
 
 const BOARD_SIZE = 4; // 4x4 board
 
@@ -140,7 +141,9 @@ function parseSongList(text) {
   return { songs, errors };
 }
 
-module.exports = {
+const api = {
   BOARD_SIZE, SQUARES, SQUARE_BY_KEY, DEFAULT_SONGS,
   shuffle, makeBoard, normalize, checkAnswer, eligibleSquares, hasBingo, parseSongList,
 };
+if (typeof module !== "undefined" && module.exports) module.exports = api; else root.BBGame = api;
+})(typeof self !== "undefined" ? self : this);
