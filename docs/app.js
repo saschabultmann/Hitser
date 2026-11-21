@@ -1,6 +1,6 @@
 /* Beatboard client: one page, three screens (home, host, player). */
 (() => {
-  const socket = io();
+  const Net = window.BBNet;
   const $app = document.getElementById("app");
   const $top = document.getElementById("topInfo");
 
@@ -26,11 +26,19 @@
     t.textContent = msg; t.hidden = false;
     clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2800);
   }
-  function emit(ev, data) {
-    return new Promise((resolve) => socket.emit(ev, data || {}, (res) => {
-      if (res && !res.ok) toast(res.error);
-      resolve(res || {});
-    }));
+  async function emit(ev, data) {
+    const res = (await Net.request(ev, data || {})) || {};
+    if (!res.ok && res.error) toast(res.error);
+    return res;
+  }
+  let busy = false;
+  let status = null; // connection problem shown on top
+  function setBusy(b, label) {
+    busy = b;
+    const btns = document.querySelectorAll("#joinBtn, #hostBtn");
+    btns.forEach((x) => { x.disabled = b; });
+    if (b && label) toast(label);
+    if (!b && toast.t) { clearTimeout(toast.t); document.getElementById("toast").hidden = true; }
   }
   function confetti() {
     const c = document.createElement("div"); c.className = "confetti";
@@ -88,14 +96,11 @@
       if (code.length !== 4) return toast("Enter the 4-letter code.");
       if (!name) return toast("Enter your name.");
       store.set("bb_name", name);
-      const res = await emit("join", { code, name, token });
-      if (res.ok) store.set("bb_code", code);
+      await joinGame(code, name);
     };
     document.getElementById("name").onkeydown = (e) => { if (e.key === "Enter") document.getElementById("joinBtn").click(); };
-    document.getElementById("hostBtn").onclick = async () => {
-      const res = await emit("host:create", { token });
-      if (res.ok) store.set("bb_code", res.code);
-    };
+    document.getElementById("hostBtn").onclick = () => hostGame();
+    if (busy) setBusy(true);
   }
 
   function playerChips(s) {
@@ -180,13 +185,16 @@
       </div>
       <div class="panel"><h2>Players (${s.players.length})</h2>${playerChips(s)}</div>
       ${main}
-      ${s.phase !== "ended" && s.phase !== "lobby" ? `<p class="center"><button id="endBtn" class="ghost">End game</button></p>` : ""}`;
+      ${s.phase !== "ended" && s.phase !== "lobby" ? `<p class="center"><button id="endBtn" class="ghost">End game</button></p>` : ""}
+      ${s.phase === "ended" || s.phase === "lobby" ? `<p class="center"><button id="newBtn" class="ghost">${s.phase === "ended" ? "Start a new game" : "Cancel this game"}</button></p>` : ""}
+      <p class="center muted">Keep this page open: the game runs in this browser.</p>`;
 
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
     on("nextBtn", () => { peek = false; emit("host:next"); });
     on("revealBtn", () => emit("host:reveal"));
     on("peekBtn", () => { peek = !peek; render(); });
     on("endBtn", () => emit("host:end"));
+    on("newBtn", () => { forget(); render(); });
     on("deckBtn", async () => {
       const res = await emit("host:deck", { text: document.getElementById("deck").value });
       if (res.ok) toast(`Loaded ${res.count} songs${res.errors.length ? `, skipped ${res.errors.length} lines` : ""}.`);
@@ -251,24 +259,69 @@
       el.onclick = go; el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") go(); };
     });
     const leave = document.getElementById("leaveBtn");
-    if (leave) leave.onclick = () => { store.del("bb_code"); state = null; render(); };
+    if (leave) leave.onclick = () => { forget(); render(); };
   }
 
-  // ---------- socket wiring ----------
-  socket.on("state", (s) => {
+  // ---------- networking ----------
+  function forget() {
+    const code = store.get("bb_code");
+    if (store.get("bb_role") === "host" && code) store.del("bb_room_" + code);
+    store.del("bb_code"); store.del("bb_role");
+    Net.leave(); state = null; status = null;
+  }
+
+  async function hostGame(code) {
+    setBusy(true, code ? "Reopening your game…" : "Creating a game…");
+    let saved = null;
+    if (code) { try { saved = JSON.parse(store.get("bb_room_" + code)); } catch {} }
+    try {
+      const res = await Net.host({ token, code, saved });
+      store.set("bb_code", res.code); store.set("bb_role", "host");
+    } catch (e) {
+      if (code) { store.del("bb_code"); store.del("bb_role"); }
+      setBusy(false); toast(e.message); return;
+    }
+    setBusy(false);
+  }
+
+  async function joinGame(code, name) {
+    setBusy(true, "Connecting…");
+    try {
+      await Net.join(code);
+      const res = await emit("join", { code, name, token });
+      if (res.ok) { store.set("bb_code", code); store.set("bb_role", "player"); }
+      else Net.leave();
+    } catch (e) {
+      if (!name) { store.del("bb_code"); store.del("bb_role"); }
+      setBusy(false); toast(e.message); return;
+    }
+    setBusy(false);
+  }
+
+  function showStatus() {
+    let el = document.getElementById("status");
+    if (!status) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement("div"); el.id = "status"; el.className = "status"; document.body.prepend(el); }
+    el.textContent = status;
+  }
+
+  Net.on("state", (s) => {
     if (s.winners.length > lastWinners && state) { if (!s.me || !s.me.bingo) toast(`Bingo for ${s.winners[s.winners.length - 1]}!`); }
     lastWinners = s.winners.length;
     state = s;
-    if (history.replaceState && params.get("code")) history.replaceState(null, "", location.pathname);
+    if (history.replaceState && params.get("code")) history.replaceState(null, "", location.pathname + location.search.replace(/([?&])code=[^&]*&?/, "$1").replace(/[?&]$/, ""));
     render();
   });
-  socket.on("kicked", () => { store.del("bb_code"); state = null; toast("The host removed you from the game."); render(); });
-  socket.on("connect", async () => {
-    const code = store.get("bb_code");
-    if (code && !(params.get("code") && params.get("code").toUpperCase() !== code)) {
-      const res = await new Promise((r) => socket.emit("join", { code, token, name: store.get("bb_name") }, r));
-      if (!res.ok) { store.del("bb_code"); state = null; render(); }
-    }
-  });
+  Net.on("status", (msg) => { status = msg; showStatus(); });
+  Net.on("reconnected", () => emit("join", { code: store.get("bb_code"), token, name: store.get("bb_name") }));
+  Net.on("kicked", () => { forget(); toast("The host removed you from the game."); render(); });
+
+  // Pick up where we left off after a refresh.
+  const savedCode = store.get("bb_code");
+  const linkCode = (params.get("code") || "").toUpperCase();
   render();
+  if (savedCode && (!linkCode || linkCode === savedCode)) {
+    if (store.get("bb_role") === "host") hostGame(savedCode);
+    else joinGame(savedCode, null);
+  }
 })();

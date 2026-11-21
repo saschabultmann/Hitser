@@ -37,24 +37,34 @@ Song 2; Blur; 1997
 
 The app only stores song facts; the host plays the music from their own source.
 
-## Run it
+## How it runs (no server)
 
-Requires Node 18+.
+Beatboard is a static website, so it can be hosted on **GitHub Pages**. The game itself runs in the **host's browser**: players connect to the host directly over WebRTC using [PeerJS](https://peerjs.com). PeerJS's free public broker is only used to find each other.
+
+- The host must keep their game page open. If the host refreshes, the game is restored from their browser storage and players reconnect automatically.
+- Players who refresh or lose connection rejoin automatically.
+- Some strict networks (corporate Wi-Fi, some mobile carriers) block peer-to-peer connections. If a player can't connect, switching between Wi-Fi and mobile data usually helps.
+
+### Publish on GitHub Pages
+
+In the repository go to **Settings → Pages**, set **Source** to *Deploy from a branch*, pick branch `main` and folder `/docs`, and save. The game appears at `https://<user>.github.io/<repo>/` a minute later.
+
+### Run locally
 
 ```bash
-npm install
-npm start          # http://localhost:3000  (set PORT to change)
+npm start   # serves docs/ on http://localhost:8080
 npm test
 ```
 
-Players on the same Wi-Fi can join via `http://<your-computer-ip>:3000`. To play over the internet, deploy it to any Node host that supports WebSockets (e.g. Render, Railway, Fly.io) with `npm start` as the start command.
-
-Games live in server memory: restarting the server ends running games. Players who refresh or lose connection rejoin automatically.
+To use your own PeerJS server instead of the public one, add `?peerhost=<host>&peerport=<port>` to the URL (add `&peersecure=1` for https).
 
 ## Project layout
 
-- `src/game.js`: rules, board squares, answer matching, bingo check
-- `src/server.js`: Express + Socket.IO server, rooms and rounds
-- `src/songs.js`: starter deck
-- `public/`: the web client (no build step)
-- `test/`: unit tests and a full multiplayer round over sockets
+- `docs/`: the whole game (no build step)
+  - `game.js`: rules, board squares, answer matching, bingo check
+  - `room.js`: the game room that runs in the host's browser
+  - `net.js`: peer-to-peer networking (PeerJS)
+  - `app.js`: screens for home, host and players
+  - `songs.js`: starter deck
+  - `peerjs.min.js`: vendored PeerJS 1.5.4 (MIT)
+- `test/`: unit tests for the rules and a full round through the room
